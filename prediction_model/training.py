@@ -322,31 +322,10 @@ class EEGEmotionTrainer:
         return self.predict(features.reshape(1, -1))
 
 
-def _example_usage() -> None:
-    """Demonstrate module usage with synthetic data.
-
-    This is only meant as a smoke test so developers can quickly sanity-check
-    the pipeline without a real EEG dataset.
-    """
-
-    rng = np.random.default_rng(42)
-    num_samples = 200
-    num_channels = 4
-    samples_per_segment = 256
-
-    fake_segments = []
-    fake_labels = []
-    for label in range(3):
-        for _ in range(num_samples // 3):
-            signal = rng.normal(0, 1, size=(samples_per_segment, num_channels))
-            signal += label * 0.1  # class-dependent bias
-            fake_segments.append(signal)
-            fake_labels.append(label)
-
+def run_training_pipeline(**kwargs):
     trainer = EEGEmotionTrainer()
-    metrics = trainer.train_from_segments(fake_segments, fake_labels)
-    print("Training metrics:", metrics)
+    trainer.train_from_segments(**kwargs)
 
 
 if __name__ == "__main__":
-    _example_usage()
+    run_training_pipeline()
