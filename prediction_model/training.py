@@ -457,9 +457,16 @@ if __name__ == "__main__":
     model_dir.mkdir(parents=True, exist_ok=True)
     
     model_path = model_dir / "eeg_emotion_classifier.pkl"
+    trainer_path = model_dir / "eeg_emotion_trainer.pkl"
     label_encoder_path = model_dir / "label_encoder.pkl"
     
+    # Save just the pipeline (for backward compatibility)
     trainer.save_model(model_path)
+    
+    # Save the entire trainer object (includes processor and feature extraction)
+    joblib.dump(trainer, trainer_path)
+    print(f"Full trainer saved to: {trainer_path}")
+    
     joblib.dump(label_encoder, label_encoder_path)
     print(f"Label encoder saved to: {label_encoder_path}")
     
