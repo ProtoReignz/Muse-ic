@@ -204,9 +204,6 @@ class EEGEmotionTrainer:
 
         return np.asarray(X, dtype=float), np.asarray(y)
 
-    # ------------------------------------------------------------------
-    # Feature engineering
-    # ------------------------------------------------------------------
     def extract_features(self, eeg_segment: np.ndarray, *, fs: int = 256) -> np.ndarray:
         """Convert a single EEG segment into a feature vector.
 
@@ -240,9 +237,6 @@ class EEGEmotionTrainer:
         feature_list = [self.extract_features(segment, fs=fs) for segment in segments]
         return np.vstack(feature_list)
 
-    # ------------------------------------------------------------------
-    # Training and evaluation
-    # ------------------------------------------------------------------
     def train(
         self,
         X: np.ndarray,
@@ -312,9 +306,6 @@ class EEGEmotionTrainer:
         report = classification_report(y, predictions, zero_division=0)
         return {"accuracy": accuracy, "report": report}
 
-    # ------------------------------------------------------------------
-    # Inference helpers
-    # ------------------------------------------------------------------
     def predict(self, features: np.ndarray) -> np.ndarray:
         """Predict labels for precomputed feature vectors."""
 
