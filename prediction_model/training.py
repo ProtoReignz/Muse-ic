@@ -15,6 +15,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Sequence, Tuple, Union
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -43,11 +44,31 @@ def prepare_csv_dataset(
     dropna: bool = True,
     output_dir: Union[str, Path, None] = None,
 ) -> dict:
-    """Load the provided ``train.csv`` and persist a clean train/test split.
+    """
+    Prepare a CSV dataset for training an EEG emotion classifier.
 
-    The helper trims leading comment markers from the header, converts labels to
-    integers, saves ``.csv`` views for human inspection, and stores an ``.npz``
-    archive that can be consumed directly via :meth:`EEGEmotionTrainer.train`.
+    Parameters
+    ----------
+    csv_path : Union[str, Path]
+        Path to a CSV file containing EEG features and labels.
+    test_size : float, optional
+        Fraction of samples to use for testing (default is 0.2).
+    random_state : int, optional
+        Random seed for reproducibility (default is 42).
+    stratify : bool, optional
+        Whether to stratify the split by label (default is True).
+    dropna : bool, optional
+        Whether to drop rows containing missing values (default is True).
+    output_dir : Union[str, Path, None], optional
+        Directory to write output files (default is the parent directory of csv_path).
+
+    Returns
+    -------
+    dict
+        Dictionary containing information about the prepared dataset, including
+        the shapes of the training and test sets, the number of features, the
+        number of dropped rows, and the paths to the train, test, and label
+        mapping CSV files.
     """
 
     dataset_path = Path(csv_path)
@@ -58,7 +79,7 @@ def prepare_csv_dataset(
     df.rename(columns=lambda c: c.strip().lstrip("# "), inplace=True)
 
     if "label" not in df.columns:
-        raise ValueError("Column 'label' was not found in the dataset.")
+        raise ValueError("Dataset does not contain a 'label' column.")
 
     original_len = len(df)
     if dropna:
@@ -66,7 +87,7 @@ def prepare_csv_dataset(
 
     feature_columns = [col for col in df.columns if col != "label"]
     if not feature_columns:
-        raise ValueError("Dataset does not contain feature columns besides 'label'.")
+        raise ValueError("Dataset does not contain any feature columns.")
 
     X = df[feature_columns].to_numpy(dtype=float)
     y_raw = df["label"].astype(str).to_numpy()
@@ -140,14 +161,13 @@ class EEGEmotionTrainer:
         test_size: float = 0.2,
         random_state: int = 42,
         model: Pipeline | None = None,
-        processor: EEGProcessor | None = None,
     ) -> None:
         self.band_sequence = tuple(bands)
         self.band_dict = OrderedDict(self.band_sequence)
         self.band_names = tuple(self.band_dict.keys())
         self.test_size = test_size
         self.random_state = random_state
-        self.processor = processor or EEGProcessor()
+        self.processor = EEGProcessor()
         self.model = model or Pipeline(
             [
                 ("scaler", StandardScaler()),
@@ -205,14 +225,21 @@ class EEGEmotionTrainer:
         return np.asarray(X, dtype=float), np.asarray(y)
 
     def extract_features(self, eeg_segment: np.ndarray, *, fs: int = 256) -> np.ndarray:
-        """Convert a single EEG segment into a feature vector.
-
-        The segment should have shape ``(samples, channels)``. The processor
-        handles noise filtering, PSD conversion, and band-power aggregation. We
-        enrich each band with absolute and relative power to retain magnitude
-        and proportion information without inflating model size.
         """
+        Extract features from a raw EEG segment.
 
+        Parameters
+        ----------
+        eeg_segment : array_like
+            Raw EEG segment, shape: (samples, channels)
+        fs : int, optional
+            Sampling frequency in Hz (default is 256)
+
+        Returns
+        -------
+        features : array_like
+            Extracted features, shape: (n_features,)
+        """
         segment = np.asarray(eeg_segment, dtype=float)
         if segment.ndim != 2:
             raise ValueError("Expected EEG segment with shape (samples, channels).")
@@ -287,7 +314,7 @@ class EEGEmotionTrainer:
         fs: int = 256,
         **kwargs,
     ) -> dict:
-        """Convenience method: featurize raw EEG segments and train."""
+        """Ffeaturize raw EEG segments and train."""
 
         X = self.build_feature_matrix(segments, fs=fs)
         y = np.asarray(labels)
@@ -321,6 +348,37 @@ class EEGEmotionTrainer:
         features = self.extract_features(eeg_segment, fs=fs)
         return self.predict(features.reshape(1, -1))
 
+    def save_model(self, model_path: Union[str, Path]) -> None:
+        """Save the trained model to disk.
+        
+        Parameters
+        ----------
+        model_path : Union[str, Path]
+            Path where the model should be saved (e.g., 'model.pkl')
+        """
+        if not hasattr(self.model, "predict"):
+            raise RuntimeError("Model is not trained. Call train() first.")
+        
+        model_path = Path(model_path)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self.model, model_path)
+        print(f"Model saved to: {model_path}")
+    
+    def load_model(self, model_path: Union[str, Path]) -> None:
+        """Load a trained model from disk.
+        
+        Parameters
+        ----------
+        model_path : Union[str, Path]
+            Path to the saved model file
+        """
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        self.model = joblib.load(model_path)
+        print(f"Model loaded from: {model_path}")
+
 
 def run_training_pipeline(**kwargs):
     trainer = EEGEmotionTrainer()
@@ -328,4 +386,97 @@ def run_training_pipeline(**kwargs):
 
 
 if __name__ == "__main__":
-    run_training_pipeline()
+    print("=" * 60)
+    print("EEG Emotion Classification Training")
+    print("=" * 60)
+    
+    data_dir = Path(__file__).parent / "train_data" / "processed"
+    train_csv = data_dir / "train_train_split.csv"
+    test_csv = data_dir / "train_test_split.csv"
+    
+    if not train_csv.exists():
+        raise FileNotFoundError(f"Training dataset not found: {train_csv}")
+    if not test_csv.exists():
+        raise FileNotFoundError(f"Test dataset not found: {test_csv}")
+    
+    print(f"\nLoading training data from: {train_csv}")
+    print(f"Loading test data from: {test_csv}")
+    
+    # Load datasets
+    train_df = pd.read_csv(train_csv)
+    test_df = pd.read_csv(test_csv)
+    
+    print(f"\nTraining set shape: {train_df.shape}")
+    print(f"Test set shape: {test_df.shape}")
+    
+    # Separate features and labels
+    X_train = train_df.drop('label', axis=1).values
+    y_train_raw = train_df['label'].values
+    
+    X_test = test_df.drop('label', axis=1).values
+    y_test_raw = test_df['label'].values
+    
+    # Encode labels
+    label_encoder = LabelEncoder()
+    y_train = label_encoder.fit_transform(y_train_raw)
+    y_test = label_encoder.transform(y_test_raw)
+    
+    print(f"\nLabel classes: {label_encoder.classes_}")
+    print(f"Class distribution in training set:")
+    unique, counts = np.unique(y_train, return_counts=True)
+    for cls, count in zip(label_encoder.classes_, counts):
+        print(f"  {cls}: {count}")
+    
+    # Initialize trainer
+    print("\n" + "=" * 60)
+    print("Training Model")
+    print("=" * 60)
+    trainer = EEGEmotionTrainer(random_state=42)
+    
+    # Train model 
+    print("\nTraining on preprocessed features...")
+    train_metrics = trainer.train(X_train, y_train, validation=False)
+    print(f"Training accuracy: {train_metrics['train_accuracy']:.4f}")
+    
+    # Evaluate on test set
+    print("\n" + "=" * 60)
+    print("Evaluating Model")
+    print("=" * 60)
+    print("\nEvaluating on test set...")
+    test_metrics = trainer.evaluate(X_test, y_test)
+    print(f"Test accuracy: {test_metrics['accuracy']:.4f}")
+    print("\nClassification Report:")
+    print(test_metrics['report'])
+    
+    # Save the trained model and label encoder
+    print("\n" + "=" * 60)
+    print("Saving Model")
+    print("=" * 60)
+    
+    model_dir = Path(__file__).parent / "saved_models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    
+    model_path = model_dir / "eeg_emotion_classifier.pkl"
+    label_encoder_path = model_dir / "label_encoder.pkl"
+    
+    trainer.save_model(model_path)
+    joblib.dump(label_encoder, label_encoder_path)
+    print(f"Label encoder saved to: {label_encoder_path}")
+    
+    # Save model metadata
+    metadata = {
+        "train_accuracy": train_metrics['train_accuracy'],
+        "test_accuracy": test_metrics['accuracy'],
+        "label_classes": label_encoder.classes_.tolist(),
+        "n_features": X_train.shape[1],
+        "train_samples": X_train.shape[0],
+        "test_samples": X_test.shape[0],
+    }
+    metadata_path = model_dir / "model_metadata.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Model metadata saved to: {metadata_path}")
+    
+    print("\n" + "=" * 60)
+    print("Training Complete!")
+    print("=" * 60)

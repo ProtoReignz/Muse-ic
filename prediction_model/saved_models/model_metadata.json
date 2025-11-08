@@ -1,0 +1,12 @@
+{
+  "train_accuracy": 1.0,
+  "test_accuracy": 0.9648711943793911,
+  "label_classes": [
+    "NEGATIVE",
+    "NEUTRAL",
+    "POSITIVE"
+  ],
+  "n_features": 2548,
+  "train_samples": 1705,
+  "test_samples": 427
+}
