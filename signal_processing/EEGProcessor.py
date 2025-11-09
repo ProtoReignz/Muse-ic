@@ -38,6 +38,8 @@ class EEGProcessor:
         self.buffer_size = buffer_size
         self.num_channels = num_channels
         self.buffer = deque(maxlen=buffer_size)
+        self.sample_count = 0  # Track total samples received
+        self.last_detection_sample = 0  # Track when we last ran detection
     
     def bandpass_filter(self, data, lowcut, highcut, fs, order=4):
         """
@@ -196,9 +198,106 @@ class EEGProcessor:
     
     def reset_buffer(self):
         """
-        Clear the buffer.
+        Clear the buffer and reset sample counters.
         """
         self.buffer.clear()
+        self.sample_count = 0
+        self.last_detection_sample = 0
+    
+    def process_and_detect_emotion(self, new_sample, detection_interval_sec=2.0, fs=256, 
+                                   min_buffer_sec=3.0, channel_names=['TP9', 'AF7', 'AF8', 'TP10']):
+        """
+        Process a new EEG sample and detect emotional state at regular intervals.
+        
+        This method is designed for real-time streaming from devices like Muse2.
+        It automatically buffers incoming samples and performs emotion detection
+        when enough data has accumulated and sufficient time has passed.
+        
+        Parameters
+        ----------
+        new_sample : array_like
+            A single EEG sample, shape: (4,) with channels [TP9, AF7, AF8, TP10]
+        detection_interval_sec : float, optional
+            Minimum time (in seconds) between emotion detections (default is 2.0)
+        fs : float, optional
+            Sampling frequency in Hz (default is 256)
+        min_buffer_sec : float, optional
+            Minimum buffer duration (in seconds) required before first detection (default is 3.0)
+        channel_names : list, optional
+            List of channel names in order (default is ['TP9', 'AF7', 'AF8', 'TP10'])
+        
+        Returns
+        -------
+        result : dict or None
+            If emotion detection was performed, returns a dictionary with:
+            - 'emotion': str - Detected emotional state ('POSITIVE', 'NEUTRAL', 'NEGATIVE')
+            - 'confidence': float - Confidence score (0-1)
+            - 'metrics': dict - Detailed metrics used for classification
+            - 'sample_count': int - Total samples processed
+            - 'buffer_size': int - Current buffer size
+            
+            If not enough time has passed or buffer is insufficient, returns None
+        
+        Examples
+        --------
+        >>> processor = EEGProcessor(buffer_size=1024, num_channels=4)
+        >>> # In your Muse2 streaming loop:
+        >>> while streaming:
+        ...     sample = muse2.get_next_sample()  # shape: (4,)
+        ...     result = processor.process_and_detect_emotion(sample, detection_interval_sec=2.0)
+        ...     if result:
+        ...         print(f"Emotion: {result['emotion']}, Confidence: {result['confidence']:.2f}")
+        """
+        # Validate sample shape
+        new_sample = np.array(new_sample)
+        if new_sample.shape != (self.num_channels,):
+            raise ValueError(f"Expected sample shape ({self.num_channels},), got {new_sample.shape}")
+        
+        # Add sample to buffer
+        self.buffer.append(new_sample)
+        self.sample_count += 1
+        
+        # Calculate minimum samples needed
+        min_samples = int(min_buffer_sec * fs)
+        detection_interval_samples = int(detection_interval_sec * fs)
+        
+        # Check if we have enough data and enough time has passed
+        current_buffer_size = len(self.buffer)
+        samples_since_last = self.sample_count - self.last_detection_sample
+        
+        # Conditions for detection:
+        # 1. Buffer has minimum required samples
+        # 2. Enough time has passed since last detection (or first detection)
+        if current_buffer_size >= min_samples and samples_since_last >= detection_interval_samples:
+            # Convert buffer to array
+            buffer_array = np.array(self.buffer)  # shape: (buffer_size, 4)
+            
+            # Detect emotion
+            try:
+                emotion, confidence, metrics = self.detect_emotional_state(
+                    buffer_array, 
+                    fs=fs, 
+                    channel_names=channel_names
+                )
+                
+                # Update last detection sample count
+                self.last_detection_sample = self.sample_count
+                
+                # Return result dictionary
+                return {
+                    'emotion': emotion,
+                    'confidence': confidence,
+                    'metrics': metrics,
+                    'sample_count': self.sample_count,
+                    'buffer_size': current_buffer_size,
+                    'timestamp_sec': self.sample_count / fs
+                }
+            except Exception as e:
+                print(f"Warning: Emotion detection failed: {e}")
+                return None
+        
+        # Not ready for detection yet
+        return None
     
     def detect_emotional_state(self, data, fs=256, channel_names=['TP9', 'AF7', 'AF8', 'TP10']):
         """
