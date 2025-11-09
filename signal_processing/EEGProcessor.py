@@ -199,3 +199,168 @@ class EEGProcessor:
         Clear the buffer.
         """
         self.buffer.clear()
+    
+    def detect_emotional_state(self, data, fs=256, channel_names=['TP9', 'AF7', 'AF8', 'TP10']):
+        """
+        Detect emotional state using Frontal Alpha Asymmetry (FAA) and band power analysis.
+        
+        This method uses established neuroscience principles:
+        - Frontal Alpha Asymmetry: Left frontal activation (lower alpha) = positive emotions
+                                   Right frontal activation (lower alpha) = negative emotions
+        - Beta band power: Higher beta = stress/anxiety (negative)
+        - Theta/Alpha ratio: Higher ratio = relaxation/meditation (positive)
+        
+        Muse2 electrode positions:
+        - AF7 (left frontal)
+        - AF8 (right frontal)
+        - TP9 (left temporal)
+        - TP10 (right temporal)
+        
+        Parameters
+        ----------
+        data : array_like
+            EEG data, shape: (samples, channels)
+            Channels should be ordered as: [TP9, AF7, AF8, TP10]
+        fs : float, optional
+            Sampling frequency in Hz (default is 256)
+        channel_names : list, optional
+            List of channel names in order (default is ['TP9', 'AF7', 'AF8', 'TP10'])
+        
+        Returns
+        -------
+        emotion : str
+            Detected emotional state: 'POSITIVE', 'NEUTRAL', or 'NEGATIVE'
+        confidence : float
+            Confidence score (0-1) indicating the strength of the emotion
+        metrics : dict
+            Dictionary containing the computed metrics used for classification:
+            - 'faa_score': Frontal Alpha Asymmetry score
+            - 'beta_power': Average beta band power
+            - 'theta_alpha_ratio': Theta/Alpha ratio
+            - 'alpha_left': Alpha power in left frontal (AF7)
+            - 'alpha_right': Alpha power in right frontal (AF8)
+        """
+        # Ensure we have 4 channels
+        if data.shape[1] != 4:
+            raise ValueError(f"Expected 4 channels, got {data.shape[1]}")
+        
+        # Apply preprocessing
+        filtered_data = self.apply_filtering(data, fs=fs)
+        
+        # Compute PSD
+        psd, freqs = self.convert_to_psd(filtered_data, fs=fs)
+        
+        # Define frequency bands
+        bands = {
+            'delta': (0.5, 4),
+            'theta': (4, 8),
+            'alpha': (8, 13),
+            'beta': (13, 30),
+            'gamma': (30, 50)
+        }
+        
+        # Extract band powers for all channels
+        band_powers = self.extract_bands(psd, freqs, bands)
+        
+        # Channel indices (assuming order: TP9, AF7, AF8, TP10)
+        idx_tp9 = 0   # Left temporal
+        idx_af7 = 1   # Left frontal
+        idx_af8 = 2   # Right frontal
+        idx_tp10 = 3  # Right temporal
+        
+        # Extract alpha power from frontal channels
+        alpha_left = band_powers['alpha'][idx_af7]   # AF7 (left frontal)
+        alpha_right = band_powers['alpha'][idx_af8]  # AF8 (right frontal)
+        
+        # Compute Frontal Alpha Asymmetry (FAA)
+        # FAA = ln(right alpha) - ln(left alpha)
+        # Positive FAA = greater left activation = positive emotions
+        # Negative FAA = greater right activation = negative emotions
+        alpha_left_safe = max(alpha_left, 1e-10)  # Avoid log(0)
+        alpha_right_safe = max(alpha_right, 1e-10)
+        faa_score = np.log(alpha_right_safe) - np.log(alpha_left_safe)
+        
+        # Compute average beta power (across frontal channels)
+        # Higher beta = stress, anxiety, negative emotions
+        beta_frontal = (band_powers['beta'][idx_af7] + band_powers['beta'][idx_af8]) / 2
+        
+        # Compute theta/alpha ratio (relaxation indicator)
+        # Higher ratio = more relaxed/meditative state
+        theta_total = np.mean(band_powers['theta'])
+        alpha_total = np.mean(band_powers['alpha'])
+        theta_alpha_ratio = theta_total / max(alpha_total, 1e-10)
+        
+        # Normalize beta power (typical range: 0-100 µV²)
+        beta_normalized = np.tanh(beta_frontal / 50.0)  # Sigmoid-like normalization
+        
+        # Decision thresholds (empirically determined)
+        FAA_POSITIVE_THRESHOLD = 0.15   # Strong left activation
+        FAA_NEGATIVE_THRESHOLD = -0.15  # Strong right activation
+        BETA_HIGH_THRESHOLD = 0.5       # High stress/anxiety
+        THETA_ALPHA_RELAXED = 1.2       # Relaxed state indicator
+        
+        # Classification logic
+        metrics = {
+            'faa_score': float(faa_score),
+            'beta_power': float(beta_frontal),
+            'theta_alpha_ratio': float(theta_alpha_ratio),
+            'alpha_left': float(alpha_left),
+            'alpha_right': float(alpha_right),
+            'beta_normalized': float(beta_normalized)
+        }
+        
+        # Score accumulation for confidence
+        positive_score = 0
+        negative_score = 0
+        
+        # FAA analysis (strongest indicator)
+        if faa_score > FAA_POSITIVE_THRESHOLD:
+            positive_score += 2.0
+        elif faa_score < FAA_NEGATIVE_THRESHOLD:
+            negative_score += 2.0
+        else:
+            # Mild asymmetry still contributes
+            if faa_score > 0:
+                positive_score += abs(faa_score) * 5
+            else:
+                negative_score += abs(faa_score) * 5
+        
+        # Beta power analysis
+        if beta_normalized > BETA_HIGH_THRESHOLD:
+            negative_score += 1.5  # High beta suggests stress/anxiety
+        else:
+            positive_score += 0.5  # Low beta suggests calm
+        
+        # Theta/Alpha ratio analysis
+        if theta_alpha_ratio > THETA_ALPHA_RELAXED:
+            positive_score += 1.0  # Relaxed/meditative state
+        elif theta_alpha_ratio < 0.8:
+            negative_score += 0.5  # Alert/tense state
+        
+        # Determine emotion based on scores
+        total_score = positive_score + negative_score
+        
+        if total_score == 0:
+            emotion = 'NEUTRAL'
+            confidence = 0.5
+        else:
+            score_diff = abs(positive_score - negative_score)
+            confidence = min(score_diff / (total_score + 1e-10), 1.0)
+            
+            if positive_score > negative_score:
+                if score_diff > 1.0:
+                    emotion = 'POSITIVE'
+                else:
+                    emotion = 'NEUTRAL'
+                    confidence = max(0.3, 1.0 - confidence)  # Low confidence for near-neutral
+            elif negative_score > positive_score:
+                if score_diff > 1.0:
+                    emotion = 'NEGATIVE'
+                else:
+                    emotion = 'NEUTRAL'
+                    confidence = max(0.3, 1.0 - confidence)
+            else:
+                emotion = 'NEUTRAL'
+                confidence = 0.5
+        
+        return emotion, confidence, metrics
